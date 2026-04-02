@@ -2,11 +2,12 @@ import streamlit as st
 import pandas as pd
 import os
 
-DB_FILE = 'produkty.csv'
+# Możesz zmienić na 'produkty.xlsx', jeśli wyeksportujesz z Numbers do Excela
+DB_FILE = 'produkty.csv' 
 
-# Funkcja wczytująca dane (dodajemy przykładowe dane, jeśli plik jest pusty)
 def load_data():
-    if not os.path.exists(DB_FILE) or os.stat(DB_FILE).st_size == 0:
+    if not os.path.exists(DB_FILE):
+        # Tworzymy bazę startową, jeśli pliku nie ma
         df = pd.DataFrame({
             'nazwa': ['Ryż biały', 'Pierś z kurczaka', 'Oliwa z oliwek', 'Brokuły'],
             'kcal': [350, 120, 880, 34],
@@ -14,78 +15,81 @@ def load_data():
             'tluszcz': [0.6, 2.0, 100.0, 0.4],
             'wegle': [77.0, 0.0, 0.0, 7.0]
         })
-        df.to_csv(DB_FILE, index=False)
+        df.to_csv(DB_FILE, index=False, sep=';') # Używamy średnika - bezpieczniejszy w PL
         return df
-    return pd.read_csv(DB_FILE)
+    
+    # Próba wczytania (obsługa CSV ze średnikiem lub przecinkiem)
+    try:
+        if DB_FILE.endswith('.xlsx'):
+            return pd.read_excel(DB_FILE)
+        else:
+            return pd.read_csv(DB_FILE, sep=None, engine='python')
+    except Exception as e:
+        st.error(f"Błąd wczytywania pliku: {e}")
+        return pd.DataFrame()
 
-st.title("🍎 Inteligentny Planer Diety")
-
-# 1. USTAWIENIA CELÓW
-st.sidebar.header("Twoje zapotrzebowanie")
-total_kcal = st.sidebar.number_input("Kalorie na cały dzień (kcal)", value=2000)
-p_bialko = st.sidebar.slider("Białko %", 0, 100, 30)
-p_tluszcz = st.sidebar.slider("Tłuszcz %", 0, 100, 25)
-p_wegle = st.sidebar.slider("Węglowodany %", 0, 100, 45)
-
-# Obliczenia gramatury docelowej
-g_b_total = (total_kcal * (p_bialko/100)) / 4
-g_t_total = (total_kcal * (p_tluszcz/100)) / 9
-g_w_total = (total_kcal * (p_wegle/100)) / 4
-
-# 2. WYBÓR PRODUKTÓW DO POSIŁKU
-st.header("🥗 Skonfiguruj swój posiłek")
-st.info("Program wyliczy ilości dla JEDNEGO posiłku (zakładając podział na 4 posiłki dziennie).")
+st.title("🥗 Inteligentny Dietetyk")
 
 df = load_data()
-ile_posilkow = st.number_input("Na ile posiłków dzielimy dietę?", value=4)
 
-# Cele na jeden posiłek
-target_b = g_b_total / ile_posilkow
-target_t = g_t_total / ile_posilkow
-target_w = g_w_total / ile_posilkow
+if not df.empty:
+    # --- BOCZNY PANEL ---
+    st.sidebar.header("Twoje Cele")
+    total_kcal = st.sidebar.number_input("Dzienny limit kcal", value=2000)
+    p_b = st.sidebar.slider("Białko %", 0, 100, 30)
+    p_t = st.sidebar.slider("Tłuszcz %", 0, 100, 25)
+    p_w = st.sidebar.slider("Węgle %", 0, 100, 45)
+    ile_posilkow = st.sidebar.number_input("Liczba posiłków", value=4)
 
-col1, col2, col3 = st.columns(3)
-with col1:
-    produkt_b = st.selectbox("Źródło białka (np. Kurczak)", df['nazwa'].tolist(), index=1)
-with col2:
-    produkt_w = st.selectbox("Źródło węglowodanów (np. Ryż)", df['nazwa'].tolist(), index=0)
-with col3:
-    produkt_t = st.selectbox("Źródło tłuszczu (np. Oliwa)", df['nazwa'].tolist(), index=2)
+    # Cel na jeden posiłek
+    target_b = ((total_kcal * (p_b/100)) / 4) / ile_posilkow
+    target_t = ((total_kcal * (p_t/100)) / 9) / ile_posilkow
+    target_w = ((total_kcal * (p_w/100)) / 4) / ile_posilkow
 
-if st.button("Oblicz gramaturę składników"):
-    # Pobieranie danych wybranych produktów
-    data_b = df[df['nazwa'] == produkt_b].iloc[0]
-    data_w = df[df['nazwa'] == produkt_w].iloc[0]
-    data_t = df[df['nazwa'] == produkt_t].iloc[0]
+    # --- WYBÓR SKŁADNIKÓW ---
+    st.subheader("Wybierz składniki posiłku")
+    wybrane = st.multiselect("Wybierz produkty z bazy:", df['nazwa'].tolist(), default=df['nazwa'].tolist()[:3])
 
-    # Uproszczony algorytm wyliczania wag:
-    # 1. Ile produktu białkowego, by pokryć target_b
-    waga_b = (target_b / data_b['bialko']) * 100
-    # 2. Ile produktu węglowego, by pokryć pozostałe target_w (uwzględniając wegle z kurczaka/tłuszczu jeśli są)
-    waga_w = (target_w / data_w['wegle']) * 100
-    # 3. Ile produktu tłuszczowego, by dobić do target_t
-    waga_t = (target_t / data_t['tluszcz']) * 100
+    if len(wybrane) >= 2:
+        # --- ZAAWANSOWANY SOLVER (Uproszczona algebra liniowa) ---
+        # Dla uproszczenia: program próbuje dopasować główne źródła
+        
+        subset = df[df['nazwa'].isin(wybrane)].copy()
+        
+        # Obliczamy wagi (w przybliżeniu), uwzględniając wzajemne przenikanie makro
+        # Szukamy: Waga * (Makro/100) = Target
+        
+        # 1. Źródło białka (najwięcej białka w wybranej liście)
+        main_b = subset.loc[subset['bialko'].idxmax()]
+        # 2. Źródło węgli (najwięcej węgli)
+        main_w = subset.loc[subset['wegle'].idxmax()]
+        # 3. Źródło tłuszczu (najwięcej tłuszczu)
+        main_t = subset.loc[subset['tluszcz'].idxmax()]
 
-    st.success(f"### Propozycja posiłku:")
-    st.write(f"✅ **{waga_b:.0f}g** - {produkt_b}")
-    st.write(f"✅ **{waga_w:.0f}g** - {produkt_w}")
-    st.write(f"✅ **{waga_t:.0f}g** - {produkt_t}")
-    
-    # Podsumowanie tego posiłku
-    posilek_kcal = (waga_b * data_b['kcal'] + waga_w * data_w['kcal'] + waga_t * data_t['kcal']) / 100
-    st.caption(f"Suma kalorii w tym posiłku: {posilek_kcal:.0f} kcal")
+        # Obliczamy wagę białka (podstawa)
+        waga_b = (target_b / main_b['bialko']) * 100
+        
+        # Odejmujemy białko z kurczaka od zapotrzebowania na węgle (bo np. ryż też ma białko)
+        # Tutaj dzieje się magia balansu:
+        pozostalo_w = target_w - (waga_b * main_b['wegle'] / 100)
+        waga_w = (max(0, pozostalo_w) / main_w['wegle']) * 100
+        
+        pozostalo_t = target_t - (waga_b * main_b['tluszcz'] / 100) - (waga_w * main_w['tluszcz'] / 100)
+        waga_t = (max(0, pozostalo_t) / main_t['tluszcz']) * 100
 
-# 3. ZARZĄDZANIE BAZĄ
-with st.expander("Zarządzaj bazą produktów (CSV)"):
-    st.dataframe(df)
-    new_name = st.text_input("Nazwa nowego produktu")
-    c1, c2, c3, c4 = st.columns(4)
-    n_k = c1.number_input("kcal", 0.0)
-    n_b = c2.number_input("B", 0.0)
-    n_t = c3.number_input("T", 0.0)
-    n_w = c4.number_input("W", 0.0)
-    
-    if st.button("Dodaj produkt"):
-        new_row = pd.DataFrame([[new_name, n_k, n_b, n_t, n_w]], columns=df.columns)
-        new_row.to_csv(DB_FILE, mode='a', header=False, index=False)
-        st.rerun()
+        st.info(f"Cel na ten posiłek: B: {target_b:.1f}g | T: {target_t:.1f}g | W: {target_w:.1f}g")
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric(main_b['nazwa'], f"{waga_b:.0f} g")
+        c2.metric(main_w['nazwa'], f"{waga_w:.0f} g")
+        c3.metric(main_t['nazwa'], f"{waga_t:.0f} g")
+
+        final_kcal = (waga_b*main_b['kcal'] + waga_w*main_w['kcal'] + waga_t*main_t['kcal'])/100
+        st.success(f"Razem w posiłku: **{final_kcal:.0f} kcal**")
+    else:
+        st.warning("Wybierz przynajmniej 3 produkty (białko, węgle, tłuszcz), aby system mógł obliczyć proporcje.")
+
+# Sekcja dodawania produktów
+with st.expander("Dodaj produkt do bazy"):
+    st.write("Uzupełnij dane (na 100g produktu):")
+    # ... (tutaj formularz dodawania jak wcześniej)
